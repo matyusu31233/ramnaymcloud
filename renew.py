@@ -52,10 +52,12 @@ cj = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
 
 
-def http(method, path, data=None):
+def http(method, path, data=None, headers_extra=None):
     """返回 (status, final_url, body_text)。不抛异常，交给调用方判断。"""
     url = path if path.startswith("http") else BASE_URL + path
     headers = {"User-Agent": UA}
+    if headers_extra:
+        headers.update(headers_extra)
     body = None
     if data is not None:
         body = urllib.parse.urlencode(data).encode("utf-8")
@@ -106,22 +108,53 @@ def fmt_minutes(total):
     return " ".join(parts)
 
 
+def extract_flash(html):
+    """提取页面上的 flash-message 提示文本（登录失败原因就写在这里）。"""
+    msgs = []
+    for m in re.finditer(r'class="flash-message"[^>]*>(.*?)</div>', html or "", re.S):
+        t = re.sub(r"<[^>]+>", " ", m.group(1))
+        t = re.sub(r"\s+", " ", t).strip()
+        if t and t not in msgs:
+            msgs.append(t)
+    return "；".join(msgs)
+
+
 def login():
-    # 先 GET 一次登录页，让服务端种下初始 Cookie
-    http("GET", f"/login?next={urllib.parse.quote(f'/manage/{PROJECT_ID}', safe='')}")
-    status, final_url, _ = http(
+    # 1) GET 登录页：种会话 Cookie，并取隐藏字段 csrf_token
+    #    （2026-11-07 实测：登录表单带 csrf_token，缺了它服务器会以
+    #     “Your security session expired” 拒绝登录，看起来像密码错误）
+    _, _, login_html = http("GET", "/login")
+    m = re.search(r'name="csrf_token"\s+value="([^"]+)"', login_html or "")
+    if not m:
+        return False, "登录页上没找到 csrf_token（页面结构可能变了）"
+    csrf_token = m.group(1)
+
+    # 2) POST 登录。实测必须带 Referer/Origin，否则面板的 CSRF 校验
+    #    会以 “Your security session expired” 拒绝（看起来像密码错误）。
+    status, final_url, body = http(
         "POST",
         "/login",
         data={
             "username": USERNAME,
             "password": PASSWORD,
-            "next": f"/manage/{PROJECT_ID}",
+            "csrf_token": csrf_token,
+        },
+        headers_extra={
+            "Referer": BASE_URL + "/login",
+            "Origin": BASE_URL,
         },
     )
     if status == 0:
         return False, "登录请求失败（网络错误）"
-    if "/login" in final_url and "next=" in final_url:
-        return False, "登录未成功（仍停留在登录页，多半是账号或密码不对）"
+
+    # 3) 成功与否不看 POST 的跳转，实际探一次管理页才算数
+    pstatus, pfinal, phtml = http("GET", f"/manage/{PROJECT_ID}")
+    if pstatus == 0:
+        return False, "登录后读取管理页失败（网络错误）"
+    if "/login" in pfinal:
+        flash = extract_flash(body) or extract_flash(phtml)
+        detail = f"（面板提示：{flash}）" if flash else ""
+        return False, f"登录未成功{detail}"
     return True, "登录成功"
 
 
@@ -181,7 +214,11 @@ def main():
         tg_send("\n".join(lines))
         return 0
 
-    status, final_url, _ = http("GET", f"/free-renew/{PROJECT_ID}")
+    status, final_url, _ = http(
+        "GET",
+        f"/free-renew/{PROJECT_ID}",
+        headers_extra={"Referer": f"{BASE_URL}/manage/{PROJECT_ID}"},
+    )
     if status == 0:
         report("❌ 续期请求失败（网络错误）")
         tg_send("\n".join(lines))
@@ -213,4 +250,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-renew.py
