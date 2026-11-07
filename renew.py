@@ -41,6 +41,7 @@ import urllib.parse
 import urllib.error
 import http.cookiejar
 import html as htmlmod
+from datetime import datetime, timezone
 
 BASE_URL = os.environ.get("RAMNAYM_BASE_URL", "https://www.ramnaymcloud.com").rstrip("/")
 USERNAME = os.environ.get("RAMNAYM_USERNAME", "")
@@ -125,13 +126,35 @@ def _value_to_minutes(m):
 def parse_time_left(html):
     """解析剩余时间 -> 总分钟数；读不到返回 None。
 
-    页面上 “Time left:” 与数值是分开的元素，原始 HTML 里没有连续的
-    “Time left: 22h 53m left”，所以依次尝试：原文直找 -> 剥标签后找 ->
-    锚定 Time left 附近找 -> 全文匹配数值本身。
+    2026-11-07 实测原始 HTML（脚本日志回传）：
+      <p>Time left: <strong id="freeTimeLeft"
+        data-expires-at="2026-11-08T05:00:30Z">Calculating...</strong></p>
+    服务端 HTML 里根本没有 “Xh Ym left” 文本，数值是前端 JS 用
+    data-expires-at（UTC ISO 时间戳）算出来的。所以首选解析这个
+    时间戳：剩余 = expires_at - 现在。文本解析只作兜底。
     """
     if not html:
         return None
     html = htmlmod.unescape(html)
+    ts = None
+    anchor = html.find('id="freeTimeLeft"')
+    if anchor >= 0:
+        m = re.search(r'data-expires-at="([^"]+)"', html[anchor : anchor + 300])
+        if m:
+            ts = m.group(1)
+    if ts is None:
+        m = re.search(r'data-expires-at="([^"]+)"', html)
+        if m:
+            ts = m.group(1)
+    if ts:
+        try:
+            exp = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            remain = (exp - datetime.now(timezone.utc)).total_seconds()
+            return max(0, int(remain // 60))
+        except ValueError:
+            pass
     v = _value_to_minutes(TIME_LEFT_RE.search(html))
     if v is not None:
         return v
