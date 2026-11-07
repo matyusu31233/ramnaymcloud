@@ -1,0 +1,27 @@
+name: RamNaym Cloud Renew
+
+on:
+  schedule:
+    # 每 6 小时跑一次（UTC）。脚本只在剩余 <12 小时时才真正续期，
+    # 续一次 +24 小时，所以正常节奏约等于每天续一次，且单次失败有重试余量。
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Renew
+        env:
+          RAMNAYM_USERNAME: ${{ secrets.RAMNAYM_USERNAME }}
+          RAMNAYM_PASSWORD: ${{ secrets.RAMNAYM_PASSWORD }}
+          RAMNAYM_PROJECT_ID: ${{ secrets.RAMNAYM_PROJECT_ID }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python renew.py
