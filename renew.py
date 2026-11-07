@@ -81,17 +81,50 @@ TIME_LEFT_RE = re.compile(
 )
 
 
-def parse_time_left(html):
-    """解析 'Time left: 23h 29m left' -> 总分钟数；读不到返回 None。"""
-    m = TIME_LEFT_RE.search(html or "")
-    if not m:
+VALUE_RE = re.compile(
+    r"(?:(\d+)\s*d\s*)?(?:(\d+)\s*h\s*)?(?:(\d+)\s*m\s*)?left",
+    re.IGNORECASE,
+)
+
+
+def _value_to_minutes(m):
+    if m is None:
         return None
     d = int(m.group(1) or 0)
     h = int(m.group(2) or 0)
     mi = int(m.group(3) or 0)
-    if d == 0 and h == 0 and mi == 0 and "0m" not in m.group(0):
+    if m.group(1) is None and m.group(2) is None and m.group(3) is None:
         return None
     return d * 1440 + h * 60 + mi
+
+
+def parse_time_left(html):
+    """解析剩余时间 -> 总分钟数；读不到返回 None。
+
+    2026-11-07 实测：页面上 “Time left:” 与数值是分开的元素
+    （数值包在单独的等宽 span 里），原始 HTML 里没有连续的
+    “Time left: 22h 53m left” 字符串。所以先在原文找，再把标签
+    剥掉后在纯文本里找，最后兜底直接匹配 “Xh Ym left” 数值本身。
+    """
+    if not html:
+        return None
+    m = TIME_LEFT_RE.search(html)
+    if m:
+        v = _value_to_minutes(m)
+        if v is not None:
+            return v
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    m = TIME_LEFT_RE.search(text)
+    if m:
+        v = _value_to_minutes(m)
+        if v is not None:
+            return v
+    idx = text.lower().find("time left")
+    if idx >= 0:
+        v = _value_to_minutes(VALUE_RE.search(text[idx : idx + 80]))
+        if v is not None:
+            return v
+    return _value_to_minutes(VALUE_RE.search(text))
 
 
 def fmt_minutes(total):
